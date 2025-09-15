@@ -57,7 +57,7 @@ impl SigMFParser{
         
         // Get ML annotation if available
         let ml_annotation = self.metadata.annotations.as_ref()
-            .and_then(|anns| anns.iter().find(|ann| ann.ds_snr.is_some()));
+            .and_then(|anns| anns.iter().find(|ann| ann.sig_snr.is_some()));
         
         // Get capture info
         let capture_with_freq = self.metadata.captures.iter()
@@ -65,7 +65,7 @@ impl SigMFParser{
         let capture_with_datetime = self.metadata.captures.iter()
             .find(|c| c.datetime.is_some());
         let capture_with_ds_info = self.metadata.captures.iter()
-            .find(|c| c.ds_gain.is_some() || c.ds_agc.is_some());
+            .find(|c| c.ds_gain.is_some() || c.agc.is_some());
         
         let df = df! {
             // File identification
@@ -114,28 +114,28 @@ impl SigMFParser{
                     .and_then(|c| c.datetime.clone())
                     .unwrap_or_default()
             ],
-            "ds_gain" => vec![
+            "gain" => vec![
                 capture_with_ds_info
                     .and_then(|c| c.gain)
                     .unwrap_or(0)
             ],
-            "ds_agc" => vec![
+            "agc" => vec![
                 capture_with_ds_info
                     .and_then(|c| c.agc)
                     .unwrap_or(false)
             ],
-            "ds_sequence_num" => vec![
+            "sequence_num" => vec![
                 capture_with_ds_info
                     .and_then(|c| c.sequence_num)
                     .unwrap_or(0)
             ],
             
             // Classical Signal Processing Derived Estimates
-            "ml_snr_db" => vec![ml_annotation.and_then(|a| a.snr).unwrap_or(0.0)],
-            "ml_power_dbm" => vec![ml_annotation.and_then(|a| a.sig_power_dbm).unwrap_or(0.0)],
-            "ml_power_dbfs" => vec![ml_annotation.and_then(|a| a.sig_power_dbfs).unwrap_or(0.0)],
-            "ml_bandwidth_hz" => vec![ml_annotation.and_then(|a| a.sig_bandwidth).unwrap_or(0.0)],
-            "ml_center_freq_hz" => vec![ml_annotation.and_then(|a| a.sig_center_freq).unwrap_or(0.0)],
+            "snr_db" => vec![ml_annotation.and_then(|a| a.snr).unwrap_or(0.0)],
+            "power_dbm" => vec![ml_annotation.and_then(|a| a.sig_power_dbm).unwrap_or(0.0)],
+            "power_dbfs" => vec![ml_annotation.and_then(|a| a.sig_power_dbfs).unwrap_or(0.0)],
+            "sig_bandwidth_hz" => vec![ml_annotation.and_then(|a| a.sig_bandwidth).unwrap_or(0.0)],
+            "sig_center_freq_hz" => vec![ml_annotation.and_then(|a| a.sig_center_freq).unwrap_or(0.0)],
             
             // Modulation probabilities
             "ml_ask_prob" => vec![ml_annotation.and_then(|a| a.ask_prob).unwrap_or(0.0)],
@@ -178,6 +178,15 @@ impl SigMFParser{
         Ok(df)
     }
 
+    fn get_custom_classifier_prob(&self, class_name: &str) -> Option<f64> {
+        self.metadata.annotations.as_ref()?
+            .iter()
+            .find_map(|ann| ann.custom_classifer_probs.as_ref()?
+            .iter()
+            .find(|c| c.class_name == class_name)
+            .map(|c| c.class_prob as f64))
+                
+    }
 
     pub fn sample_rate(&self) -> f64 {
         self.metadata.global.sample_rate
