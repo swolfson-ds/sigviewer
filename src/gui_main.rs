@@ -5,7 +5,8 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
-
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -77,6 +78,10 @@ struct SigViewerApp {
     show_column_selector: bool,
     config: AppConfig,
     use_dark_theme: bool,
+    table_cache: Option<Vec<Vec<String>>>, // Cached formatted cell values
+    cache_valid: bool,
+    last_filter_hash: u64, // To detect when filters actually change
+    visible_row_range: std::ops::Range<usize>, // Only render visible rows
 }
 
 impl Default for SigViewerApp {
@@ -102,6 +107,10 @@ impl Default for SigViewerApp {
             show_column_selector: false,
             use_dark_theme: config.use_dark_theme,
             config,
+            table_cache: None,
+            cache_valid: false,
+            last_filter_hash: 0,
+            visible_row_range: 0..0,
         }
     }
 }
@@ -116,6 +125,36 @@ impl SigViewerApp {
         self.config.use_dark_theme = self.use_dark_theme;
         self.config.hidden_columns = self.hidden_columns.clone();
         self.config.save();
+    }
+    
+    fn invalidate_cache(&mut self) {
+        self.cache_valid = false;
+        self.table_cache = None;
+    }
+
+    fn build_table_cache(&mut self, dataset: &DataFrame, visible_columns: &[String]) {
+        if self.cache_valid {
+            return;
+        }
+        
+        let num_rows = dataset.height().min(1000);
+        let mut cache = Vec::with_capacity(num_rows);
+        
+        for row_idx in 0..num_rows {
+            let mut row_cache = Vec::with_capacity(visible_columns.len());
+            for column_name in visible_columns {
+                if let Ok(column) = dataset.column(column_name) {
+                    let cell_value = format_cell_value(column, row_idx);
+                    row_cache.push(cell_value);
+                } else {
+                    row_cache.push("Error".to_string());
+                }
+            }
+            cache.push(row_cache);
+        }
+        
+        self.table_cache = Some(cache);
+        self.cache_valid = true;
     }
 
     fn load_dataset(&mut self, path: &str) {
@@ -134,6 +173,7 @@ impl SigViewerApp {
                 
                 self.filtered_dataset = Some(dataset.clone());
                 self.dataset = Some(dataset);
+                self.invalidate_cache(); // Add this line
                 self.show_load_dialog = false;
                 
                 // Save the successful directory path
@@ -148,60 +188,185 @@ impl SigViewerApp {
     }
 
     fn apply_filters(&mut self) {
-        if let Some(ref dataset) = self.dataset {
-            let mut filtered = dataset.clone().lazy();
-            
-            // Apply text filters for each column
-            for (column_name, filter_text) in &self.column_filters {
-                if !filter_text.is_empty() {
-                    if let Ok(column) = dataset.column(column_name) {
-                        match column.dtype() {
-                            DataType::String => {
-                                filtered = filtered.filter(
-                                    col(column_name).eq(lit(filter_text.clone()))
-                                );
+        let dataset = if let Some(ref dataset) = self.dataset {
+            dataset.clone()
+        } else {
+            return;
+        };
+        
+        // Create a hash of current filters to detect changes
+        let current_hash = self.calculate_filter_hash();
+        
+        // Only recompute if filters actually changed
+        if current_hash == self.last_filter_hash {
+            return;
+        }
+        
+        self.last_filter_hash = current_hash;
+        
+        let mut filtered = dataset.clone().lazy();
+        
+        // Apply filters
+        for (column_name, filter_text) in &self.column_filters {
+            if !filter_text.is_empty() {
+                if let Ok(column) = dataset.column(column_name) {
+                    match column.dtype() {
+                        DataType::String => {
+                            filtered = filtered.filter(
+                                col(column_name).eq(lit(filter_text.clone()))
+                            );
+                        }
+                        DataType::Float64 | DataType::Float32 => {
+                            if let Ok(num) = filter_text.parse::<f64>() {
+                                filtered = filtered.filter(col(column_name).gt_eq(lit(num)));
                             }
-                            DataType::Float64 | DataType::Float32 => {
-                                if let Ok(num) = filter_text.parse::<f64>() {
-                                    filtered = filtered.filter(col(column_name).gt_eq(lit(num)));
-                                }
+                        }
+                        DataType::Int64 | DataType::Int32 | DataType::UInt64 | DataType::UInt32 => {
+                            if let Ok(num) = filter_text.parse::<i64>() {
+                                filtered = filtered.filter(col(column_name).gt_eq(lit(num)));
                             }
-                            DataType::Int64 | DataType::Int32 | DataType::UInt64 | DataType::UInt32 => {
-                                if let Ok(num) = filter_text.parse::<i64>() {
-                                    filtered = filtered.filter(col(column_name).gt_eq(lit(num)));
-                                }
+                        }
+                        DataType::Boolean => {
+                            if filter_text.to_lowercase() == "true" {
+                                filtered = filtered.filter(col(column_name));
+                            } else if filter_text.to_lowercase() == "false" {
+                                filtered = filtered.filter(col(column_name).not());
                             }
-                            DataType::Boolean => {
-                                if filter_text.to_lowercase() == "true" {
-                                    filtered = filtered.filter(col(column_name));
-                                } else if filter_text.to_lowercase() == "false" {
-                                    filtered = filtered.filter(col(column_name).not());
-                                }
-                            }
-                            _ => {
-                                if let Ok(num) = filter_text.parse::<f64>() {
-                                    filtered = filtered.filter(col(column_name).eq(lit(num)));
-                                }
+                        }
+                        _ => {
+                            if let Ok(num) = filter_text.parse::<f64>() {
+                                filtered = filtered.filter(col(column_name).eq(lit(num)));
                             }
                         }
                     }
                 }
             }
-            
-            match filtered.collect() {
-                Ok(result) => {
-                    self.filtered_dataset = Some(result.clone());
-                    self.status_message = format!("Showing {} of {} files", 
-                        result.height(), 
-                        dataset.height()
-                    );
-                }
-                Err(e) => {
-                    self.error_message = Some(format!("Filter error: {}", e));
-                    self.filtered_dataset = Some(dataset.clone());
-                }
+        }
+        
+        match filtered.collect() {
+            Ok(result) => {
+                let result_height = result.height();
+                self.filtered_dataset = Some(result);
+                self.invalidate_cache();
+                self.status_message = format!("Showing {} of {} files", 
+                    result_height, 
+                    dataset.height()
+                );
+            }
+            Err(e) => {
+                self.error_message = Some(format!("Filter error: {}", e));
+                self.filtered_dataset = Some(dataset);
             }
         }
+    }
+
+    fn calculate_filter_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        
+        // Create a sorted vector of key-value pairs for consistent hashing
+        let mut filter_vec: Vec<(&String, &String)> = self.column_filters.iter().collect();
+        filter_vec.sort_by_key(|&(key, _)| key);
+        
+        for (key, value) in filter_vec {
+            key.hash(&mut hasher);
+            value.hash(&mut hasher);
+        }
+        
+        hasher.finish()
+    }
+
+    fn render_dataset_table(&mut self, ui: &mut egui::Ui) {
+        let dataset = if let Some(ref dataset) = self.filtered_dataset {
+            dataset.clone()
+        } else {
+            return;
+        };
+        
+        let available_height = ui.available_height() - 100.0;
+        
+        egui::ScrollArea::both()
+            .max_height(available_height)
+            .show(ui, |ui| {
+                // Filter inputs
+                ui.horizontal(|ui| {
+                    ui.label("Filters:");
+                    if ui.button("Columns...").clicked() {
+                        self.show_column_selector = true;
+                    }
+                    if ui.button("Apply Filters").clicked() {
+                        self.apply_filters();
+                        self.invalidate_cache(); // Force cache rebuild
+                    }
+                });
+                
+                let visible_columns = self.get_visible_columns(&dataset);
+                
+                // Only show first 8 filter boxes to avoid UI clutter
+                ui.horizontal_wrapped(|ui| {
+                    for column_name_str in visible_columns.iter().take(8) {
+                        ui.group(|ui| {
+                            ui.vertical(|ui| {
+                                ui.strong(column_name_str);
+                                let filter_text = self.column_filters.get_mut(column_name_str).unwrap();
+                                let response = ui.text_edit_singleline(filter_text);
+                                
+                                if response.changed() {
+                                    self.apply_filters();
+                                }
+                            });
+                        });
+                    }
+                    
+                    if visible_columns.len() > 8 {
+                        ui.label(format!("... and {} more columns", visible_columns.len() - 8));
+                    }
+                });
+                
+                ui.separator();
+                
+                //Build cache if needed
+                if !self.cache_valid || self.table_cache.is_none() {
+                    self.build_table_cache(&dataset, &visible_columns);
+                }
+                
+                // Optimized table rendering using cache
+                use egui_extras::{Column, TableBuilder};
+                
+                let num_columns = visible_columns.len();
+                let _num_rows = dataset.height().min(1000); // Fix unused warning with underscore
+                
+                if num_columns > 0 {
+                    TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .columns(Column::auto().at_least(100.0), num_columns)
+                        .header(25.0, |mut header| {
+                            for column_name in &visible_columns {
+                                header.col(|ui| {
+                                    ui.strong(column_name);
+                                });
+                            }
+                        })
+                        .body(|body| {
+                            // Use the cache for much faster rendering
+                            if let Some(ref cache) = self.table_cache {
+                                body.rows(20.0, cache.len(), |mut row| {
+                                    let row_index = row.index();
+                                    if let Some(row_data) = cache.get(row_index) {
+                                        for cell_value in row_data {
+                                            row.col(|ui| {
+                                                ui.label(cell_value);
+                                            });
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                } else {
+                    ui.label("No visible columns. Use 'Columns...' to show some columns.");
+                }
+            });
     }
 
     fn render_load_dialog(&mut self, ctx: &egui::Context) {
@@ -243,7 +408,6 @@ impl SigViewerApp {
             }
         }
     }
-
     fn render_column_selector(&mut self, ctx: &egui::Context) {
         if self.show_column_selector {
             egui::Window::new("Column Visibility")
@@ -282,9 +446,8 @@ impl SigViewerApp {
                                     }
                                 }
                             });
-                        
-                        // Save config after all changes are made
                         if changes_made {
+                            self.invalidate_cache(); // Add this line
                             self.save_config();
                         }
                         
@@ -292,6 +455,7 @@ impl SigViewerApp {
                         ui.horizontal(|ui| {
                             if ui.button("Show All").clicked() {
                                 self.hidden_columns.clear();
+                                self.invalidate_cache();
                                 self.save_config();
                             }
                             if ui.button("Hide All").clicked() {
@@ -304,6 +468,7 @@ impl SigViewerApp {
                     }
                     
                     if ui.button("Close").clicked() {
+                        self.invalidate_cache();
                         self.show_column_selector = false;
                     }
                 });
@@ -315,81 +480,6 @@ impl SigViewerApp {
             .map(|s| s.to_string())
             .filter(|col_name| !self.hidden_columns.contains(col_name))
             .collect()
-    }
-
-    fn render_dataset_table(&mut self, ui: &mut egui::Ui) {
-        if let Some(dataset) = self.filtered_dataset.clone() {
-            let available_height = ui.available_height() - 100.0;
-            
-            egui::ScrollArea::both()
-                .max_height(available_height)
-                .show(ui, |ui| {
-                    // Filter inputs
-                    ui.horizontal(|ui| {
-                        ui.label("Filters:");
-                        if ui.button("Columns...").clicked() {
-                            self.show_column_selector = true;
-                        }
-                    });
-                    
-                    let visible_columns = self.get_visible_columns(&dataset);
-                    
-                    ui.horizontal_wrapped(|ui| {
-                        for column_name_str in &visible_columns {
-                            ui.group(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.strong(column_name_str);
-                                    let filter_text = self.column_filters.get_mut(column_name_str).unwrap();
-                                    let response = ui.text_edit_singleline(filter_text);
-                                    
-                                    if response.changed() {
-                                        self.apply_filters();
-                                    }
-                                });
-                            });
-                        }
-                    });
-                    
-                    ui.separator();
-                    
-                    // Data table using TableBuilder
-                    use egui_extras::{Column, TableBuilder};
-                    
-                    let num_columns = visible_columns.len();
-                    let num_rows = dataset.height().min(1000);
-                    
-                    if num_columns > 0 {
-                        TableBuilder::new(ui)
-                            .striped(true)
-                            .resizable(true)
-                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                            .columns(Column::auto().at_least(100.0), num_columns)
-                            .header(25.0, |mut header| {
-                                for column_name in &visible_columns {
-                                    header.col(|ui| {
-                                        ui.strong(column_name);
-                                    });
-                                }
-                            })
-                            .body(|mut body| {
-                                for row_idx in 0..num_rows {
-                                    body.row(20.0, |mut row| {
-                                        for column_name in &visible_columns {
-                                            row.col(|ui| {
-                                                if let Ok(column) = dataset.column(column_name) {
-                                                    let cell_value = format_cell_value(column, row_idx);
-                                                    ui.label(cell_value);
-                                                }
-                                            });
-                                        }
-                                    });
-                                }
-                            });
-                    } else {
-                        ui.label("No visible columns. Use 'Columns...' to show some columns.");
-                    }
-                });
-        }
     }
 }
 
