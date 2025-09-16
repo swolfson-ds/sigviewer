@@ -3,6 +3,8 @@ use polars::prelude::*;
 use sig_viewer::parser::SigMFDataset;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -15,8 +17,51 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Sig Viewer",
         options,
-        Box::new(|_cc| Ok(Box::new(SigViewerApp::new()))),
+        Box::new(|cc| {
+            // Set light theme
+            cc.egui_ctx.set_visuals(egui::Visuals::light());
+            
+            Ok(Box::new(SigViewerApp::new()))
+        }),
     )
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct AppConfig {
+    last_directory: String,
+    use_dark_theme: bool,
+    hidden_columns: HashSet<String>,
+    window_size: Option<[f32; 2]>,
+}
+
+impl AppConfig {
+    fn config_path() -> PathBuf {
+        let config_dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("sig_viewer");
+        
+        std::fs::create_dir_all(&config_dir).ok();
+        config_dir.join("config.json")
+    }
+    
+    fn load() -> Self {
+        let path = Self::config_path();
+        if path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if let Ok(config) = serde_json::from_str(&contents) {
+                    return config;
+                }
+            }
+        }
+        Self::default()
+    }
+    
+    fn save(&self) {
+        let path = Self::config_path();
+        if let Ok(contents) = serde_json::to_string_pretty(self) {
+            std::fs::write(path, contents).ok();
+        }
+    }
 }
 
 struct SigViewerApp {
@@ -30,23 +75,33 @@ struct SigViewerApp {
     file_dialog: egui_file::FileDialog,
     hidden_columns: HashSet<String>,
     show_column_selector: bool,
+    config: AppConfig,
     use_dark_theme: bool,
 }
 
 impl Default for SigViewerApp {
     fn default() -> Self {
+        let config = AppConfig::load();
+        
         Self {
             dataset: None,
             filtered_dataset: None,
-            directory_path: String::new(),
+            directory_path: config.last_directory.clone(),
             status_message: "No data loaded".to_string(),
             column_filters: HashMap::new(),
             show_load_dialog: true,
             error_message: None,
-            file_dialog: egui_file::FileDialog::select_folder(None),
-            hidden_columns: HashSet::new(),
+            file_dialog: egui_file::FileDialog::select_folder(
+                if config.last_directory.is_empty() { 
+                    None 
+                } else { 
+                    Some(PathBuf::from(&config.last_directory)) 
+                }
+            ),
+            hidden_columns: config.hidden_columns.clone(),
             show_column_selector: false,
-            use_dark_theme: false,
+            use_dark_theme: config.use_dark_theme,
+            config,
         }
     }
 }
@@ -54,6 +109,13 @@ impl Default for SigViewerApp {
 impl SigViewerApp {
     fn new() -> Self {
         Self::default()
+    }
+
+    fn save_config(&mut self) {
+        self.config.last_directory = self.directory_path.clone();
+        self.config.use_dark_theme = self.use_dark_theme;
+        self.config.hidden_columns = self.hidden_columns.clone();
+        self.config.save();
     }
 
     fn load_dataset(&mut self, path: &str) {
@@ -73,6 +135,10 @@ impl SigViewerApp {
                 self.filtered_dataset = Some(dataset.clone());
                 self.dataset = Some(dataset);
                 self.show_load_dialog = false;
+                
+                // Save the successful directory path
+                self.directory_path = path.to_string();
+                self.save_config();
             }
             Err(e) => {
                 self.error_message = Some(format!("Failed to load dataset: {}", e));
@@ -172,6 +238,8 @@ impl SigViewerApp {
         if self.file_dialog.show(ctx).selected() {
             if let Some(path) = self.file_dialog.path() {
                 self.directory_path = path.to_string_lossy().to_string();
+                // Update the file dialog's default path for next time
+                self.file_dialog = egui_file::FileDialog::select_folder(Some(path.to_path_buf()));
             }
         }
     }
@@ -185,41 +253,52 @@ impl SigViewerApp {
                 .show(ctx, |ui| {
                     ui.heading("Show/Hide Columns");
                     
-                    if let Some(ref dataset) = self.dataset {
+                    // Clone the column names first to avoid borrowing issues
+                    let column_names: Vec<String> = if let Some(ref dataset) = self.dataset {
+                        dataset.get_column_names()
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    
+                    if !column_names.is_empty() {
+                        let mut changes_made = false;
+                        
                         egui::ScrollArea::vertical()
                             .max_height(300.0)
                             .show(ui, |ui| {
-                                let column_names: Vec<String> = dataset.get_column_names()
-                                    .iter()
-                                    .map(|s| s.to_string())
-                                    .collect();
-                                
-                                for column_name in column_names {
-                                    let mut is_visible = !self.hidden_columns.contains(&column_name);
+                                for column_name in &column_names {
+                                    let mut is_visible = !self.hidden_columns.contains(column_name);
                                     
-                                    if ui.checkbox(&mut is_visible, &column_name).changed() {
+                                    if ui.checkbox(&mut is_visible, column_name).changed() {
                                         if is_visible {
-                                            self.hidden_columns.remove(&column_name);
+                                            self.hidden_columns.remove(column_name);
                                         } else {
-                                            self.hidden_columns.insert(column_name);
+                                            self.hidden_columns.insert(column_name.clone());
                                         }
+                                        changes_made = true;
                                     }
                                 }
                             });
+                        
+                        // Save config after all changes are made
+                        if changes_made {
+                            self.save_config();
+                        }
                         
                         ui.separator();
                         ui.horizontal(|ui| {
                             if ui.button("Show All").clicked() {
                                 self.hidden_columns.clear();
+                                self.save_config();
                             }
                             if ui.button("Hide All").clicked() {
-                                let column_names: Vec<String> = dataset.get_column_names()
-                                    .iter()
-                                    .map(|s| s.to_string())
-                                    .collect();
-                                for col in column_names {
-                                    self.hidden_columns.insert(col);
+                                for col in &column_names {
+                                    self.hidden_columns.insert(col.clone());
                                 }
+                                self.save_config();
                             }
                         });
                     }
@@ -230,7 +309,6 @@ impl SigViewerApp {
                 });
         }
     }
-
     fn get_visible_columns(&self, dataset: &DataFrame) -> Vec<String> {
         dataset.get_column_names()
             .iter()
@@ -317,6 +395,16 @@ impl SigViewerApp {
 
 impl eframe::App for SigViewerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Apply theme if it changed
+        if self.use_dark_theme != self.config.use_dark_theme {
+            if self.use_dark_theme {
+                ctx.set_visuals(egui::Visuals::dark());
+            } else {
+                ctx.set_visuals(egui::Visuals::light());
+            }
+            self.save_config();
+        }
+
         // Top menu bar
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -331,7 +419,7 @@ impl eframe::App for SigViewerApp {
                     }
                 });
                 
-                ui.menu_button("Data View", |ui| {
+                ui.menu_button("View", |ui| {
                     if ui.button("Clear Filters").clicked() {
                         for filter in self.column_filters.values_mut() {
                             filter.clear();
@@ -347,19 +435,7 @@ impl eframe::App for SigViewerApp {
                         self.show_column_selector = true;
                         ui.close();
                     }
-                });
-                
-                ui.menu_button("View", |ui| {
-                    if ui.button("Clear Filters").clicked() {
-                        // ... existing code
-                        ui.close();
-                    }
-                    if ui.button("Column Visibility...").clicked() {
-                        self.show_column_selector = true;
-                        ui.close();
-                    }
                     
-                    // Add theme toggle
                     ui.separator();
                     if ui.checkbox(&mut self.use_dark_theme, "Dark Theme").changed() {
                         if self.use_dark_theme {
@@ -367,8 +443,10 @@ impl eframe::App for SigViewerApp {
                         } else {
                             ctx.set_visuals(egui::Visuals::light());
                         }
+                        self.save_config();
                     }
                 });
+                
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(&self.status_message);
                 });

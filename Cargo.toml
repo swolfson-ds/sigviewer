@@ -17,6 +17,7 @@ eframe = "0.32.3"
 egui = "0.32.3"
 egui_extras = { version= "0.32.3"}
 egui_file = "0.23.1"
+dirs = "6.0.0"
 
 [[bin]]
 name = "sig_viewer_cli"
