@@ -1,4 +1,4 @@
-# Data Explorer
+# SigViewer
 
 A Rust-based tool for exploring and analyzing RF signal data, with a focus on SigMF (Signal Metadata Format) files.
 
