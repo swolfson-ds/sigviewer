@@ -57,7 +57,7 @@ impl SigMFParser{
         
         // Get ML annotation if available
         let ml_annotation = self.metadata.annotations.as_ref()
-            .and_then(|anns| anns.iter().find(|ann| ann.sig_snr.is_some()));
+            .and_then(|anns| anns.iter().find(|ann| ann.sig_center_freq.is_some()));
         
         // Get capture info
         let capture_with_freq = self.metadata.captures.iter()
@@ -157,17 +157,17 @@ impl SigMFParser{
             "ml_no_sig" => vec![ml_annotation.and_then(|a| a.ml_no_sig).unwrap_or(false)],
             
             // String identifiers
-            "ds_uuid" => vec![ml_annotation.and_then(|a| a.uuid.clone()).unwrap_or_default()],
-            "ds_sdr_handle" => vec![ml_annotation.and_then(|a| a.sdr_handle.clone()).unwrap_or_default()],
+            "sig_uuid" => vec![ml_annotation.and_then(|a| a.uuid.clone()).unwrap_or_default()],
+            "sdr_handle" => vec![ml_annotation.and_then(|a| a.sdr_handle.clone()).unwrap_or_default()],
             
             // Annotation frequency ranges
-            "ann_freq_lower_edge_hz" => vec![
+            "freq_lower_edge_hz" => vec![
                 self.metadata.annotations.as_ref()
                     .and_then(|anns| anns.first())
                     .and_then(|ann| ann.freq_lower_edge)
                     .unwrap_or(0.0)
             ],
-            "ann_freq_upper_edge_hz" => vec![
+            "freq_upper_edge_hz" => vec![
                 self.metadata.annotations.as_ref()
                     .and_then(|anns| anns.first())
                     .and_then(|ann| ann.freq_upper_edge)

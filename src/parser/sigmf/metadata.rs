@@ -100,7 +100,7 @@ pub struct AnnotationInfo {
     pub sdr_handle: Option<String>,
     #[serde(rename = "ds:sigBandwidth")]
     pub sig_bandwidth: Option<f64>,
-    #[serde(rename = "ds:sig_center_freq")]
+    #[serde(rename = "ds:sigCenterFreq")]
     pub sig_center_freq: Option<f64>,
     #[serde(rename = "ds:sig_power_dbfs")]
     pub sig_power_dbfs : Option<f64>,

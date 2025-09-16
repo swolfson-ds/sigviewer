@@ -45,6 +45,14 @@ fn main() -> Result<()> {
                 collected.height(), 
                 collected.width());
             println!("Columns: {:?}", collected.get_column_names());
+            // for each column name print the first value
+            for name in collected.get_column_names() {
+                if let Ok(series) = collected.column(name) {
+                    if series.len() > 0 {
+                        println!("{}: {:?}", name, series.get(0));
+                    }
+                }
+            }
         }
         
         Commands::Dataset { dir, output } => {
