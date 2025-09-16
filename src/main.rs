@@ -1,12 +1,12 @@
 mod parser;
-mod data_ops;
-mod viz;
-mod file_picker;
+//mod data_ops;
+//mod viz;
+//mod file_picker;
 
 use clap::{Parser, Subcommand};
 use anyhow::Result;
 use parser::{FileParser, SigMFDataset};
-
+use polars::prelude::*;
 #[derive(Parser)]
 #[command(name = "data_explorer")]
 #[command(about = "A CLI tool for exploring RF data files")]

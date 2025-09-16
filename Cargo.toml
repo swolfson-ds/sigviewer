@@ -6,9 +6,9 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.99"
 byteorder = "1.5.0"
-clap = "4.5.47"
+clap = {version = "4.5.47", features = ["derive"]}
 num-complex = "0.4.6"
-polars = "0.50.0"
+polars = {version="0.43.0", features = ["lazy","csv"]}
 serde = "1.0.224"
 serde_json = "1.0.145"
 walkdir = "2.5.0"

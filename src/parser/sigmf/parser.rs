@@ -48,7 +48,7 @@ impl SigMFParser{
         // Calculate basic file info
         let (num_samples, file_size_bytes) = if self.data_file_path.exists() {
             let file_size = std::fs::metadata(&self.data_file_path)?.len();
-            let sample_size = self.datatype.sample_size_bytes() as u64;
+            let sample_size = self.data_type.sample_size_bytes() as u64;
             let num_samples = file_size / sample_size;
             (num_samples, file_size)
         } else {

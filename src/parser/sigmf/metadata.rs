@@ -25,11 +25,12 @@ pub struct GlobalInfo {
     #[serde(rename = "core:hw")]
     pub hardware: Option<String>,
     #[serde(rename = "core:geolocation")]
-    pub geolocation: Option<Geolocation>,
+    pub geolocation: Option<GeoLocation>,
     
 }
 
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GeoLocation {
     #[serde(rename = "type")]
     pub geo_type: String,
@@ -90,7 +91,7 @@ pub struct AnnotationInfo {
     #[serde(rename = "ds:cssProb")]
     pub css_prob: Option<f64>,
     #[serde(rename = "ds:customClassifierProbs")]
-    pub custom_classifier_probs: Option<Vec<CusomClassProbField>>,
+    pub custom_classifier_probs: Option<Vec<CustomClassProbField>>,
     #[serde(rename = "ds:ml_no_sig")]
     pub ml_no_sig: Option<bool>,
     #[serde(rename = "ds:ook_prob")]
@@ -102,16 +103,16 @@ pub struct AnnotationInfo {
     #[serde(rename = "ds:sig_center_freq")]
     pub sig_center_freq: Option<f64>,
     #[serde(rename = "ds:sig_power_dbfs")]
-    pub sig_power_dbfs = Option<f64>,
+    pub sig_power_dbfs : Option<f64>,
     #[serde(rename = "ds:sig_power_dbm")]
-    pub sig_power_dbm = Option<f64>,
+    pub sig_power_dbm : Option<f64>,
     #[serde(rename = "ds:snr")]
-    pub sig_snr = Option<f64>,
+    pub sig_snr : Option<f64>,
     #[serde(rename = "ds:uuid")]
     pub uuid: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CustomClassProbField {
     #[serde(rename = "className")]
     pub class_name: String,
