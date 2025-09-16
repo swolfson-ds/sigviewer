@@ -8,7 +8,7 @@ use anyhow::Result;
 use parser::{FileParser, SigMFDataset};
 use polars::prelude::*;
 #[derive(Parser)]
-#[command(name = "data_explorer")]
+#[command(name = "sig_viewer_cli")]
 #[command(about = "A CLI tool for exploring RF data files")]
 struct Cli {
     #[command(subcommand)]

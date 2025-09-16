@@ -12,3 +12,20 @@ polars = {version="0.43.0", features = ["lazy","csv"]}
 serde = "1.0.224"
 serde_json = "1.0.145"
 walkdir = "2.5.0"
+
+eframe = "0.32.3"
+egui = "0.32.3"
+egui_extras = { version= "0.32.3"}
+egui_file = "0.23.1"
+
+[[bin]]
+name = "sig_viewer_cli"
+path = "src/main.rs"
+
+[[bin]]
+name = "sig_viewer_gui"
+path = "src/gui_main.rs"
+
+[lib]
+name = "sig_viewer"
+path = "src/lib.rs"

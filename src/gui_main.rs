@@ -2,7 +2,7 @@ use eframe::egui;
 use polars::prelude::*;
 use sig_viewer::parser::SigMFDataset;
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -27,6 +27,10 @@ struct SigViewerApp {
     column_filters: HashMap<String, String>,
     show_load_dialog: bool,
     error_message: Option<String>,
+    file_dialog: egui_file::FileDialog,
+    hidden_columns: HashSet<String>,
+    show_column_selector: bool,
+    use_dark_theme: bool,
 }
 
 impl Default for SigViewerApp {
@@ -39,6 +43,10 @@ impl Default for SigViewerApp {
             column_filters: HashMap::new(),
             show_load_dialog: true,
             error_message: None,
+            file_dialog: egui_file::FileDialog::select_folder(None),
+            hidden_columns: HashSet::new(),
+            show_column_selector: false,
+            use_dark_theme: false,
         }
     }
 }
@@ -56,7 +64,7 @@ impl SigViewerApp {
             Ok(dataset) => {
                 self.status_message = format!("Loaded {} files", dataset.height());
                 
-                // Initialize column filters - convert column names to String
+                // Initialize column filters
                 self.column_filters.clear();
                 for col_name in dataset.get_column_names() {
                     self.column_filters.insert(col_name.to_string(), String::new());
@@ -83,8 +91,6 @@ impl SigViewerApp {
                     if let Ok(column) = dataset.column(column_name) {
                         match column.dtype() {
                             DataType::String => {
-                                // Fixed: Use a simpler approach - direct string comparison for now
-                                // In Polars 0.43, the string API might be different
                                 filtered = filtered.filter(
                                     col(column_name).eq(lit(filter_text.clone()))
                                 );
@@ -107,7 +113,6 @@ impl SigViewerApp {
                                 }
                             }
                             _ => {
-                                // For other types, try numeric comparison
                                 if let Ok(num) = filter_text.parse::<f64>() {
                                     filtered = filtered.filter(col(column_name).eq(lit(num)));
                                 }
@@ -153,7 +158,7 @@ impl SigViewerApp {
                         }
                         
                         if ui.button("Browse...").clicked() {
-                            ui.label("File browser not implemented yet - enter path manually");
+                            self.file_dialog.open();
                         }
                     });
                     
@@ -162,6 +167,76 @@ impl SigViewerApp {
                     }
                 });
         }
+
+        // Handle file dialog
+        if self.file_dialog.show(ctx).selected() {
+            if let Some(path) = self.file_dialog.path() {
+                self.directory_path = path.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    fn render_column_selector(&mut self, ctx: &egui::Context) {
+        if self.show_column_selector {
+            egui::Window::new("Column Visibility")
+                .collapsible(false)
+                .resizable(true)
+                .default_size([300.0, 400.0])
+                .show(ctx, |ui| {
+                    ui.heading("Show/Hide Columns");
+                    
+                    if let Some(ref dataset) = self.dataset {
+                        egui::ScrollArea::vertical()
+                            .max_height(300.0)
+                            .show(ui, |ui| {
+                                let column_names: Vec<String> = dataset.get_column_names()
+                                    .iter()
+                                    .map(|s| s.to_string())
+                                    .collect();
+                                
+                                for column_name in column_names {
+                                    let mut is_visible = !self.hidden_columns.contains(&column_name);
+                                    
+                                    if ui.checkbox(&mut is_visible, &column_name).changed() {
+                                        if is_visible {
+                                            self.hidden_columns.remove(&column_name);
+                                        } else {
+                                            self.hidden_columns.insert(column_name);
+                                        }
+                                    }
+                                }
+                            });
+                        
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("Show All").clicked() {
+                                self.hidden_columns.clear();
+                            }
+                            if ui.button("Hide All").clicked() {
+                                let column_names: Vec<String> = dataset.get_column_names()
+                                    .iter()
+                                    .map(|s| s.to_string())
+                                    .collect();
+                                for col in column_names {
+                                    self.hidden_columns.insert(col);
+                                }
+                            }
+                        });
+                    }
+                    
+                    if ui.button("Close").clicked() {
+                        self.show_column_selector = false;
+                    }
+                });
+        }
+    }
+
+    fn get_visible_columns(&self, dataset: &DataFrame) -> Vec<String> {
+        dataset.get_column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .filter(|col_name| !self.hidden_columns.contains(col_name))
+            .collect()
     }
 
     fn render_dataset_table(&mut self, ui: &mut egui::Ui) {
@@ -174,19 +249,19 @@ impl SigViewerApp {
                     // Filter inputs
                     ui.horizontal(|ui| {
                         ui.label("Filters:");
+                        if ui.button("Columns...").clicked() {
+                            self.show_column_selector = true;
+                        }
                     });
                     
+                    let visible_columns = self.get_visible_columns(&dataset);
+                    
                     ui.horizontal_wrapped(|ui| {
-                        let column_names: Vec<String> = dataset.get_column_names()
-                            .iter()
-                            .map(|s| s.to_string())
-                            .collect();
-                        
-                        for column_name_str in column_names {
+                        for column_name_str in &visible_columns {
                             ui.group(|ui| {
                                 ui.vertical(|ui| {
-                                    ui.strong(&column_name_str);
-                                    let filter_text = self.column_filters.get_mut(&column_name_str).unwrap();
+                                    ui.strong(column_name_str);
+                                    let filter_text = self.column_filters.get_mut(column_name_str).unwrap();
                                     let response = ui.text_edit_singleline(filter_text);
                                     
                                     if response.changed() {
@@ -202,35 +277,39 @@ impl SigViewerApp {
                     // Data table using TableBuilder
                     use egui_extras::{Column, TableBuilder};
                     
-                    let num_columns = dataset.width();
+                    let num_columns = visible_columns.len();
                     let num_rows = dataset.height().min(1000);
                     
-                    TableBuilder::new(ui)
-                        .striped(true)
-                        .resizable(true)
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .columns(Column::auto().at_least(100.0), num_columns)
-                        .header(25.0, |mut header| {
-                            for column_name in dataset.get_column_names() {
-                                header.col(|ui| {
-                                    ui.strong(column_name.as_str());
-                                });
-                            }
-                        })
-                        .body(|mut body| {
-                            for row_idx in 0..num_rows {
-                                body.row(20.0, |mut row| {
-                                    for column_name in dataset.get_column_names() {
-                                        row.col(|ui| {
-                                            if let Ok(column) = dataset.column(column_name.as_str()) {
-                                                let cell_value = format_cell_value(column, row_idx);
-                                                ui.label(cell_value);
-                                            }
-                                        });
-                                    }
-                                });
-                            }
-                        });
+                    if num_columns > 0 {
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .columns(Column::auto().at_least(100.0), num_columns)
+                            .header(25.0, |mut header| {
+                                for column_name in &visible_columns {
+                                    header.col(|ui| {
+                                        ui.strong(column_name);
+                                    });
+                                }
+                            })
+                            .body(|mut body| {
+                                for row_idx in 0..num_rows {
+                                    body.row(20.0, |mut row| {
+                                        for column_name in &visible_columns {
+                                            row.col(|ui| {
+                                                if let Ok(column) = dataset.column(column_name) {
+                                                    let cell_value = format_cell_value(column, row_idx);
+                                                    ui.label(cell_value);
+                                                }
+                                            });
+                                        }
+                                    });
+                                }
+                            });
+                    } else {
+                        ui.label("No visible columns. Use 'Columns...' to show some columns.");
+                    }
                 });
         }
     }
@@ -252,7 +331,7 @@ impl eframe::App for SigViewerApp {
                     }
                 });
                 
-                ui.menu_button("View", |ui| {
+                ui.menu_button("Data View", |ui| {
                     if ui.button("Clear Filters").clicked() {
                         for filter in self.column_filters.values_mut() {
                             filter.clear();
@@ -264,9 +343,32 @@ impl eframe::App for SigViewerApp {
                         }
                         ui.close();
                     }
+                    if ui.button("Column Visibility...").clicked() {
+                        self.show_column_selector = true;
+                        ui.close();
+                    }
                 });
                 
-                // Fixed: Use correct layout method
+                ui.menu_button("View", |ui| {
+                    if ui.button("Clear Filters").clicked() {
+                        // ... existing code
+                        ui.close();
+                    }
+                    if ui.button("Column Visibility...").clicked() {
+                        self.show_column_selector = true;
+                        ui.close();
+                    }
+                    
+                    // Add theme toggle
+                    ui.separator();
+                    if ui.checkbox(&mut self.use_dark_theme, "Dark Theme").changed() {
+                        if self.use_dark_theme {
+                            ctx.set_visuals(egui::Visuals::dark());
+                        } else {
+                            ctx.set_visuals(egui::Visuals::light());
+                        }
+                    }
+                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(&self.status_message);
                 });
@@ -288,8 +390,9 @@ impl eframe::App for SigViewerApp {
             }
         });
 
-        // Load dialog (modal)
+        // Dialogs
         self.render_load_dialog(ctx);
+        self.render_column_selector(ctx);
         
         // Error popup
         let show_error = self.error_message.is_some();
