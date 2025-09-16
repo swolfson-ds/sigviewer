@@ -41,11 +41,11 @@ pub struct GeoLocation {
 pub struct CaptureInfo {
     // SigMF Core Fields
     #[serde(rename = "core:sample_start")]
-    pub sample_start: u64,
+    pub sample_start: Option<u64>,
     #[serde(rename = "core:frequency")]
-    pub frequency: f64,
+    pub frequency: Option<f64>,
     #[serde(rename = "core:datetime")]
-    pub timestamp: String,
+    pub timestamp: Option<String>,
 
     // Distributed Spectrum Specific Fields
     #[serde(rename = "ds:agc")]

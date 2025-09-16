@@ -51,7 +51,7 @@ impl SigMFDataset {
         }
         
         // Combine all rows into one DataFrame using vstack
-        let mut combined = all_rows.into_iter().next().unwrap();
+        let mut combined = all_rows.clone().into_iter().next().unwrap();
         for row_df in all_rows.into_iter().skip(1) {
             combined.vstack_mut(&row_df)?;
         }
@@ -62,26 +62,19 @@ impl SigMFDataset {
     
     /// Parse specific files into a dataset
     pub fn from_files<P: AsRef<Path>>(file_paths: &[P]) -> Result<DataFrame> {
-        let rows: Result<Vec<_>> = file_paths
-            .iter()
-            .map(|path| {
-                let parser = SigMFParser::from_meta_file(path)?;
-                parser.to_summary_row()
-            })
-            .collect();
-        
-        let mut all_rows = rows?;
-        
-        if all_rows.is_empty() {
+        if file_paths.is_empty() {
             anyhow::bail!("No files provided");
         }
-        
-        // Combine all rows
+        let mut all_rows = Vec::new();
+        for path in file_paths {
+            let parser = SigMFParser::from_meta_file(path)?;
+            let row_df = parser.to_summary_row()?;
+            all_rows.push(row_df);
+        }
         let mut combined = all_rows.remove(0);
         for row_df in all_rows {
             combined.vstack_mut(&row_df)?;
         }
-        
         Ok(combined)
     }
 }

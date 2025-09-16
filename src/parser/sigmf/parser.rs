@@ -28,7 +28,7 @@ impl SigMFParser{
             data_file_path,
         })
     }
-    pub fn to_summary_row(&self) -> Result<DataFrame, Box<dyn std::error::Error>> {
+    pub fn to_summary_row(&self) -> Result<DataFrame> {
         let global = &self.metadata.global;
         
         // Get data filename (not full path)
@@ -63,9 +63,9 @@ impl SigMFParser{
         let capture_with_freq = self.metadata.captures.iter()
             .find(|c| c.frequency.is_some());
         let capture_with_datetime = self.metadata.captures.iter()
-            .find(|c| c.datetime.is_some());
+            .find(|c| c.timestamp.is_some());
         let capture_with_ds_info = self.metadata.captures.iter()
-            .find(|c| c.ds_gain.is_some() || c.agc.is_some());
+            .find(|c| c.gain.is_some() || c.agc.is_some());
         
         let df = df! {
             // File identification
@@ -111,13 +111,13 @@ impl SigMFParser{
             ],
             "capture_datetime" => vec![
                 capture_with_datetime
-                    .and_then(|c| c.datetime.clone())
+                    .and_then(|c| c.timestamp.clone())
                     .unwrap_or_default()
             ],
             "gain" => vec![
                 capture_with_ds_info
                     .and_then(|c| c.gain)
-                    .unwrap_or(0)
+                    .unwrap_or(0.0)
             ],
             "agc" => vec![
                 capture_with_ds_info
@@ -131,7 +131,7 @@ impl SigMFParser{
             ],
             
             // Classical Signal Processing Derived Estimates
-            "snr_db" => vec![ml_annotation.and_then(|a| a.snr).unwrap_or(0.0)],
+            "snr_db" => vec![ml_annotation.and_then(|a| a.sig_snr).unwrap_or(0.0)],
             "power_dbm" => vec![ml_annotation.and_then(|a| a.sig_power_dbm).unwrap_or(0.0)],
             "power_dbfs" => vec![ml_annotation.and_then(|a| a.sig_power_dbfs).unwrap_or(0.0)],
             "sig_bandwidth_hz" => vec![ml_annotation.and_then(|a| a.sig_bandwidth).unwrap_or(0.0)],
@@ -145,8 +145,8 @@ impl SigMFParser{
             "ml_fm_prob" => vec![ml_annotation.and_then(|a| a.analog_fm_prob).unwrap_or(0.0)],
             "ml_ook_prob" => vec![ml_annotation.and_then(|a| a.ook_prob).unwrap_or(0.0)],
             "ml_chirp_prob" => vec![ml_annotation.and_then(|a| a.chirp_prob).unwrap_or(0.0)],
-            "ml_constellation_prob" => vec![ml_annotation.and_then(|a| a.ds_constellation_prob).unwrap_or(0.0)],
-            "ml_css_prob" => vec![ml_annotation.and_then(|a| a.ds_css_prob).unwrap_or(0.0)],
+            "ml_constellation_prob" => vec![ml_annotation.and_then(|a| a.constellation_prob).unwrap_or(0.0)],
+            "ml_css_prob" => vec![ml_annotation.and_then(|a| a.css_prob).unwrap_or(0.0)],
             
             // Custom classifier results
             "ml_wifi_prob" => vec![self.get_custom_classifier_prob("wifi").unwrap_or(0.0)],
@@ -181,7 +181,7 @@ impl SigMFParser{
     fn get_custom_classifier_prob(&self, class_name: &str) -> Option<f64> {
         self.metadata.annotations.as_ref()?
             .iter()
-            .find_map(|ann| ann.custom_classifer_probs.as_ref()?
+            .find_map(|ann| ann.custom_classifier_probs.as_ref()?
             .iter()
             .find(|c| c.class_name == class_name)
             .map(|c| c.class_prob as f64))

@@ -66,8 +66,8 @@ fn main() -> Result<()> {
         
         Commands::Stats { dataset } => {
             println!("Loading dataset: {}", dataset);
-            let df = LazyFrame::scan_csv(dataset, ScanArgsCSV::default())?;
-            let stats = df.select([
+            let lf = LazyCsvReader::new(dataset).finish()?;
+            let stats = lf.select([
                 col("ml_wifi_prob").mean().alias("avg_wifi_prob"),
                 col("ml_snr_db").mean().alias("avg_snr"),
                 col("center_freq_hz").n_unique().alias("unique_freqs"),
