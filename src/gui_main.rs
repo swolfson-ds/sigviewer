@@ -7,6 +7,17 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+
+#[derive(Debug, Clone)]
+enum FilterValue {
+    Text(String),
+    Range { min: String, max: String},
+    Boolean(String),
+}
+
+
+
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -70,7 +81,7 @@ struct SigViewerApp {
     filtered_dataset: Option<DataFrame>,
     directory_path: String,
     status_message: String,
-    column_filters: HashMap<String, String>,
+    column_filters: HashMap<String, FilterValue>,
     show_load_dialog: bool,
     error_message: Option<String>,
     file_dialog: egui_file::FileDialog,
@@ -175,7 +186,18 @@ impl SigViewerApp {
                 // Initialize column filters
                 self.column_filters.clear();
                 for col_name in dataset.get_column_names() {
-                    self.column_filters.insert(col_name.to_string(), String::new());
+                    if let Ok(column) = dataset.column(col_name) {
+                        let filter_value = match column.dtype() {
+                            DataType::Float64 | DataType::Float32 | 
+                            DataType::Int64 | DataType::Int32 | 
+                            DataType::UInt64 | DataType::UInt32 => {
+                                FilterValue::Range { min: String::new(), max: String::new() }
+                            }
+                            DataType::Boolean => FilterValue::Boolean(String::new()),
+                            _ => FilterValue::Text(String::new()),
+                        };
+                        self.column_filters.insert(col_name.to_string(), filter_value);
+                    }
                 }
                 
                 self.filtered_dataset = Some(dataset.clone());
@@ -214,35 +236,61 @@ impl SigViewerApp {
         let mut filtered = dataset.clone().lazy();
         
         // Apply filters
-        for (column_name, filter_text) in &self.column_filters {
-            if !filter_text.is_empty() {
-                if let Ok(column) = dataset.column(column_name) {
-                    match column.dtype() {
-                        DataType::String => {
-                            filtered = filtered.filter(
-                                col(column_name).eq(lit(filter_text.clone()))
-                            );
-                        }
-                        DataType::Float64 | DataType::Float32 => {
-                            if let Ok(num) = filter_text.parse::<f64>() {
-                                filtered = filtered.filter(col(column_name).gt_eq(lit(num)));
+        for (column_name, filter_value) in &self.column_filters {
+            if let Ok(column) = dataset.column(column_name) {
+                match filter_value {
+                    FilterValue::Range { min, max } => {
+                        let mut has_filter = false;
+                        
+                        // Apply min filter if specified
+                        if !min.is_empty() {
+                            match column.dtype() {
+                                DataType::Float64 | DataType::Float32 => {
+                                    if let Ok(min_val) = min.parse::<f64>() {
+                                        filtered = filtered.filter(col(column_name).gt_eq(lit(min_val)));
+                                        has_filter = true;
+                                    }
+                                }
+                                DataType::Int64 | DataType::Int32 | DataType::UInt64 | DataType::UInt32 => {
+                                    if let Ok(min_val) = min.parse::<i64>() {
+                                        filtered = filtered.filter(col(column_name).gt_eq(lit(min_val)));
+                                        has_filter = true;
+                                    }
+                                }
+                                _ => {}
                             }
                         }
-                        DataType::Int64 | DataType::Int32 | DataType::UInt64 | DataType::UInt32 => {
-                            if let Ok(num) = filter_text.parse::<i64>() {
-                                filtered = filtered.filter(col(column_name).gt_eq(lit(num)));
+                        
+                        // Apply max filter if specified
+                        if !max.is_empty() {
+                            match column.dtype() {
+                                DataType::Float64 | DataType::Float32 => {
+                                    if let Ok(max_val) = max.parse::<f64>() {
+                                        filtered = filtered.filter(col(column_name).lt_eq(lit(max_val)));
+                                        has_filter = true;
+                                    }
+                                }
+                                DataType::Int64 | DataType::Int32 | DataType::UInt64 | DataType::UInt32 => {
+                                    if let Ok(max_val) = max.parse::<i64>() {
+                                        filtered = filtered.filter(col(column_name).lt_eq(lit(max_val)));
+                                        has_filter = true;
+                                    }
+                                }
+                                _ => {}
                             }
                         }
-                        DataType::Boolean => {
-                            if filter_text.to_lowercase() == "true" {
+                    }
+                    FilterValue::Text(text) => {
+                        if !text.is_empty() {
+                            filtered = filtered.filter(col(column_name).eq(lit(text.clone())));
+                        }
+                    }
+                    FilterValue::Boolean(text) => {
+                        if !text.is_empty() {
+                            if text.to_lowercase() == "true" {
                                 filtered = filtered.filter(col(column_name));
-                            } else if filter_text.to_lowercase() == "false" {
+                            } else if text.to_lowercase() == "false" {
                                 filtered = filtered.filter(col(column_name).not());
-                            }
-                        }
-                        _ => {
-                            if let Ok(num) = filter_text.parse::<f64>() {
-                                filtered = filtered.filter(col(column_name).eq(lit(num)));
                             }
                         }
                     }
@@ -270,13 +318,26 @@ impl SigViewerApp {
     fn calculate_filter_hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         
-        // Create a sorted vector of key-value pairs for consistent hashing
-        let mut filter_vec: Vec<(&String, &String)> = self.column_filters.iter().collect();
+        let mut filter_vec: Vec<(&String, &FilterValue)> = self.column_filters.iter().collect();
         filter_vec.sort_by_key(|&(key, _)| key);
         
         for (key, value) in filter_vec {
             key.hash(&mut hasher);
-            value.hash(&mut hasher);
+            match value {
+                FilterValue::Range { min, max } => {
+                    "range".hash(&mut hasher);
+                    min.hash(&mut hasher);
+                    max.hash(&mut hasher);
+                }
+                FilterValue::Text(text) => {
+                    "text".hash(&mut hasher);
+                    text.hash(&mut hasher);
+                }
+                FilterValue::Boolean(text) => {
+                    "bool".hash(&mut hasher);
+                    text.hash(&mut hasher);
+                }
+            }
         }
         
         hasher.finish()
@@ -330,96 +391,134 @@ impl SigViewerApp {
                         self.clear_selection();
                     }
                 });
-                
-                let visible_columns = self.get_visible_columns(&dataset);
-                
-                // Filter boxes
-                ui.horizontal_wrapped(|ui| {
-                    for column_name_str in visible_columns.iter().take(8) {
-                        ui.group(|ui| {
-                            ui.vertical(|ui| {
-                                ui.strong(column_name_str);
-                                let filter_text = self.column_filters.get_mut(column_name_str).unwrap();
-                                let response = ui.text_edit_singleline(filter_text);
-                                
-                                if response.changed() {
-                                    self.apply_filters();
-                                    self.clear_selection();
-                                }
-                            });
-                        });
-                    }
+    let mut filter_updates = Vec::new(); // Store changes to apply later
+    let visible_columns = self.get_visible_columns(&dataset);
+
+    ui.horizontal_wrapped(|ui| {
+        for column_name_str in visible_columns.iter().take(6) {
+            ui.group(|ui| {
+                ui.vertical(|ui| {
+                    ui.strong(column_name_str);
                     
-                    if visible_columns.len() > 8 {
-                        ui.label(format!("... and {} more columns", visible_columns.len() - 8));
-                    }
-                });
-                
-                ui.separator();
-                
-                // Build cache if needed
-                if !self.cache_valid || self.table_cache.is_none() {
-                    self.build_table_cache(&dataset, &visible_columns);
-                }
-                
-                // Table with selection
-                use egui_extras::{Column, TableBuilder};
-                
-                let num_columns = visible_columns.len();
-                
-                if num_columns > 0 {
-                    TableBuilder::new(ui)
-                        .striped(true)
-                        .resizable(true)
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::exact(30.0)) // Selection column
-                        .columns(Column::auto().at_least(100.0), num_columns)
-                        .header(25.0, |mut header| {
-                            header.col(|ui| {
-                                ui.strong("Select");
-                            });
-                            for column_name in &visible_columns {
-                                header.col(|ui| {
-                                    ui.strong(column_name);
+                    // Clone the current filter value to avoid borrowing self
+                    if let Some(filter_value) = self.column_filters.get(column_name_str).cloned() {
+                        match filter_value {
+                            FilterValue::Range { mut min, mut max } => {
+                                ui.horizontal(|ui| {
+                                    ui.label("Min:");
+                                    let min_response = ui.text_edit_singleline(&mut min);
+                                    if min_response.changed() {
+                                        filter_updates.push((column_name_str.clone(), FilterValue::Range { min: min.clone(), max: max.clone() }));
+                                    }
                                 });
-                            }
-                        })
-                        .body(|body| {
-                            let cache = self.table_cache.as_ref();
-                            let current_selection = self.selected_row;
-                            
-                            if let Some(cache) = cache {
-                                body.rows(20.0, cache.len(), |mut row| {
-                                    let row_index = row.index();
-                                    let is_selected = current_selection == Some(row_index);
-                                    
-                                    // Selection column - try a different approach
-                                    row.col(|ui| {
-                                        // Add some debug visual feedback
-                                        if ui.selectable_label(is_selected, if is_selected { "●" } else { "○" }).clicked() {
-                                            if is_selected {
-                                                selection_change = Some(None); // Clear selection
-                                            } else {
-                                                selection_change = Some(Some(row_index)); // Select this row
-                                            }
-                                        }
-                                    });
-                                    
-                                    // Data columns
-                                    if let Some(row_data) = cache.get(row_index) {
-                                        for cell_value in row_data {
-                                            row.col(|ui| {
-                                                ui.label(cell_value);
-                                            });
-                                        }
+                                ui.horizontal(|ui| {
+                                    ui.label("Max:");
+                                    let max_response = ui.text_edit_singleline(&mut max);
+                                    if max_response.changed() {
+                                        filter_updates.push((column_name_str.clone(), FilterValue::Range { min, max }));
                                     }
                                 });
                             }
-                        });
-                } else {
-                    ui.label("No visible columns. Use 'Columns...' to show some columns.");
-                }
+                            FilterValue::Text(mut text) => {
+                                let response = ui.text_edit_singleline(&mut text);
+                                if response.changed() {
+                                    filter_updates.push((column_name_str.clone(), FilterValue::Text(text)));
+                                }
+                            }
+                            FilterValue::Boolean(mut text) => {
+                                ui.horizontal(|ui| {
+                                    ui.label("Bool:");
+                                    let response = ui.text_edit_singleline(&mut text);
+                                    if response.changed() {
+                                        filter_updates.push((column_name_str.clone(), FilterValue::Boolean(text)));
+                                    }
+                                });
+                            }
+                        }
+                    }
+                });
             });
+        }
+        
+        if visible_columns.len() > 6 {
+            ui.label(format!("... and {} more columns", visible_columns.len() - 6));
+        }
+    });
+
+    // Apply all filter updates after UI rendering is complete
+    if !filter_updates.is_empty() {
+        for (column_name, new_filter_value) in filter_updates {
+            self.column_filters.insert(column_name, new_filter_value);
+        }
+        self.apply_filters();
+        self.clear_selection();
+    }
+                
+            ui.separator();
+            
+            // Build cache if needed
+            if !self.cache_valid || self.table_cache.is_none() {
+                self.build_table_cache(&dataset, &visible_columns);
+            }
+            
+            // Table with selection
+            use egui_extras::{Column, TableBuilder};
+            
+            let num_columns = visible_columns.len();
+            
+            if num_columns > 0 {
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::exact(30.0)) // Selection column
+                    .columns(Column::auto().at_least(100.0), num_columns)
+                    .header(25.0, |mut header| {
+                        header.col(|ui| {
+                            ui.strong("Select");
+                        });
+                        for column_name in &visible_columns {
+                            header.col(|ui| {
+                                ui.strong(column_name);
+                            });
+                        }
+                    })
+                    .body(|body| {
+                        let cache = self.table_cache.as_ref();
+                        let current_selection = self.selected_row;
+                        
+                        if let Some(cache) = cache {
+                            body.rows(20.0, cache.len(), |mut row| {
+                                let row_index = row.index();
+                                let is_selected = current_selection == Some(row_index);
+                                
+                                // Selection column - try a different approach
+                                row.col(|ui| {
+                                    // Add some debug visual feedback
+                                    if ui.selectable_label(is_selected, if is_selected { "●" } else { "○" }).clicked() {
+                                        if is_selected {
+                                            selection_change = Some(None); // Clear selection
+                                        } else {
+                                            selection_change = Some(Some(row_index)); // Select this row
+                                        }
+                                    }
+                                });
+                                
+                                // Data columns
+                                if let Some(row_data) = cache.get(row_index) {
+                                    for cell_value in row_data {
+                                        row.col(|ui| {
+                                            ui.label(cell_value);
+                                        });
+                                    }
+                                }
+                            });
+                        }
+                    });
+            } else {
+                ui.label("No visible columns. Use 'Columns...' to show some columns.");
+            }
+        });
         
         // Apply selection change after table rendering
         if let Some(new_selection) = selection_change {
@@ -572,8 +671,15 @@ impl eframe::App for SigViewerApp {
                 
                 ui.menu_button("View", |ui| {
                     if ui.button("Clear Filters").clicked() {
-                        for filter in self.column_filters.values_mut() {
-                            filter.clear();
+                        for filter_value in self.column_filters.values_mut() {
+                            match filter_value {
+                                FilterValue::Range { min, max } => {
+                                    min.clear();
+                                    max.clear();
+                                }
+                                FilterValue::Text(text) => text.clear(),
+                                FilterValue::Boolean(text) => text.clear(),
+                            }
                         }
                         if self.dataset.is_some() {
                             self.filtered_dataset = self.dataset.clone();
