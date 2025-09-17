@@ -98,6 +98,7 @@ impl SigMFParser{
                 num_samples,
                 file_size_bytes,
                 global,
+                1,
                 capture_with_freq,
                 capture_with_datetime,
                 capture_with_ds_info,
@@ -107,6 +108,7 @@ impl SigMFParser{
 
         // Create a row for each ML annotation
         let mut all_rows = Vec::new();
+        let num_linked_rows = ml_annotations.len() as u64;
         for ml_annotation in ml_annotations {
             let row_df = self.create_single_row_dataframe(
                 &meta_filename,
@@ -114,6 +116,7 @@ impl SigMFParser{
                 num_samples,
                 file_size_bytes,
                 global,
+                num_linked_rows,
                 capture_with_freq,
                 capture_with_datetime,
                 capture_with_ds_info,
@@ -137,6 +140,7 @@ impl SigMFParser{
         num_samples: u64,
         file_size_bytes: u64,
         global: &super::GlobalInfo,
+        num_linked_rows: u64,
         capture_with_freq: Option<&super::CaptureInfo>,
         capture_with_datetime: Option<&super::CaptureInfo>,
         capture_with_ds_info: Option<&super::CaptureInfo>,
@@ -158,7 +162,7 @@ impl SigMFParser{
             "sigmf_version" => vec![global.version.clone()],
             "author" => vec![global.author.clone().unwrap_or_default()],
             "hardware" => vec![global.hardware.clone().unwrap_or_default()],
-            
+            "num_detected_sigs" => vec![num_linked_rows],
             // Geolocation
             "latitude" => vec![
                 global.geolocation.as_ref()
