@@ -82,6 +82,9 @@ struct SigViewerApp {
     cache_valid: bool,
     last_filter_hash: u64, // To detect when filters actually change
     visible_row_range: std::ops::Range<usize>, // Only render visible rows
+    selected_row: Option<usize>, // Currently selected row
+    show_visualization_dialog: bool,
+    selected_row_data: Option<HashMap<String, String>>,
 }
 
 impl Default for SigViewerApp {
@@ -111,10 +114,14 @@ impl Default for SigViewerApp {
             cache_valid: false,
             last_filter_hash: 0,
             visible_row_range: 0..0,
+            selected_row: None,
+            show_visualization_dialog: false,
+            selected_row_data: None,
         }
     }
 }
 
+// main functionality impl block
 impl SigViewerApp {
     fn new() -> Self {
         Self::default()
@@ -282,7 +289,29 @@ impl SigViewerApp {
             return;
         };
         
-        let available_height = ui.available_height() - 100.0;
+        let available_height = ui.available_height() - 150.0;
+        
+        // Selection info and buttons
+        ui.horizontal(|ui| {
+            if let Some(selected_idx) = self.selected_row {
+                ui.label(format!("Selected row: {}", selected_idx + 1));
+                
+                if ui.button("Visualize").clicked() {
+                    self.show_visualization_dialog = true;
+                }
+                
+                if ui.button("Clear Selection").clicked() {
+                    self.clear_selection();
+                }
+            } else {
+                ui.label("No row selected");
+            }
+        });
+        
+        ui.separator();
+        
+        // Store selection changes to apply after table rendering
+        let mut selection_change: Option<Option<usize>> = None;
         
         egui::ScrollArea::both()
             .max_height(available_height)
@@ -295,13 +324,14 @@ impl SigViewerApp {
                     }
                     if ui.button("Apply Filters").clicked() {
                         self.apply_filters();
-                        self.invalidate_cache(); // Force cache rebuild
+                        self.invalidate_cache();
+                        self.clear_selection();
                     }
                 });
                 
                 let visible_columns = self.get_visible_columns(&dataset);
                 
-                // Only show first 8 filter boxes to avoid UI clutter
+                // Filter boxes
                 ui.horizontal_wrapped(|ui| {
                     for column_name_str in visible_columns.iter().take(8) {
                         ui.group(|ui| {
@@ -312,6 +342,7 @@ impl SigViewerApp {
                                 
                                 if response.changed() {
                                     self.apply_filters();
+                                    self.clear_selection();
                                 }
                             });
                         });
@@ -324,24 +355,27 @@ impl SigViewerApp {
                 
                 ui.separator();
                 
-                //Build cache if needed
+                // Build cache if needed
                 if !self.cache_valid || self.table_cache.is_none() {
                     self.build_table_cache(&dataset, &visible_columns);
                 }
                 
-                // Optimized table rendering using cache
+                // Table with selection
                 use egui_extras::{Column, TableBuilder};
                 
                 let num_columns = visible_columns.len();
-                let _num_rows = dataset.height().min(1000); // Fix unused warning with underscore
                 
                 if num_columns > 0 {
                     TableBuilder::new(ui)
                         .striped(true)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::exact(30.0)) // Selection column
                         .columns(Column::auto().at_least(100.0), num_columns)
                         .header(25.0, |mut header| {
+                            header.col(|ui| {
+                                ui.strong("Select");
+                            });
                             for column_name in &visible_columns {
                                 header.col(|ui| {
                                     ui.strong(column_name);
@@ -349,10 +383,27 @@ impl SigViewerApp {
                             }
                         })
                         .body(|body| {
-                            // Use the cache for much faster rendering
-                            if let Some(ref cache) = self.table_cache {
+                            let cache = self.table_cache.as_ref();
+                            let current_selection = self.selected_row;
+                            
+                            if let Some(cache) = cache {
                                 body.rows(20.0, cache.len(), |mut row| {
                                     let row_index = row.index();
+                                    let is_selected = current_selection == Some(row_index);
+                                    
+                                    // Selection column - try a different approach
+                                    row.col(|ui| {
+                                        // Add some debug visual feedback
+                                        if ui.selectable_label(is_selected, if is_selected { "●" } else { "○" }).clicked() {
+                                            if is_selected {
+                                                selection_change = Some(None); // Clear selection
+                                            } else {
+                                                selection_change = Some(Some(row_index)); // Select this row
+                                            }
+                                        }
+                                    });
+                                    
+                                    // Data columns
                                     if let Some(row_data) = cache.get(row_index) {
                                         for cell_value in row_data {
                                             row.col(|ui| {
@@ -367,6 +418,14 @@ impl SigViewerApp {
                     ui.label("No visible columns. Use 'Columns...' to show some columns.");
                 }
             });
+        
+        // Apply selection change after table rendering
+        if let Some(new_selection) = selection_change {
+            match new_selection {
+                Some(row_idx) => self.select_row(row_idx),
+                None => self.clear_selection(),
+            }
+        }
     }
 
     fn render_load_dialog(&mut self, ctx: &egui::Context) {
@@ -561,6 +620,7 @@ impl eframe::App for SigViewerApp {
         // Dialogs
         self.render_load_dialog(ctx);
         self.render_column_selector(ctx);
+        self.render_visualization_dialog(ctx);
         
         // Error popup
         let show_error = self.error_message.is_some();
@@ -618,6 +678,120 @@ fn format_cell_value(column: &polars::series::Series, row_idx: usize) -> String 
         }
         _ => {
             format!("{:?}", column.get(row_idx).unwrap())
+        }
+    }
+}
+
+
+// handle selectable rows
+impl SigViewerApp {
+    fn select_row(&mut self, row_index: usize) {
+    println!("Selecting row: {}", row_index); // Debug output
+    self.selected_row = Some(row_index);
+    
+    // Use filtered_dataset instead of dataset
+    if let Some(ref dataset) = self.filtered_dataset {
+        let mut row_data = HashMap::new();
+        
+        // Make sure row_index is valid
+        if row_index < dataset.height() {
+            for column_name in dataset.get_column_names() {
+                if let Ok(column) = dataset.column(column_name) {
+                    let cell_value = format_cell_value(column, row_index);
+                    row_data.insert(column_name.to_string(), cell_value);
+                }
+            }
+            self.selected_row_data = Some(row_data);
+            println!("Row data cached for row {}", row_index); // Debug output
+        } else {
+            println!("Row index {} out of bounds (dataset height: {})", row_index, dataset.height());
+            self.selected_row_data = None;
+        }
+    } else {
+        self.selected_row_data = None;
+        println!("No filtered dataset available");
+    }
+    }
+
+    fn clear_selection(&mut self) {
+        self.selected_row = None;
+        self.selected_row_data = None;
+    }
+
+    fn render_visualization_dialog(&mut self, ctx: &egui::Context) {
+        if self.show_visualization_dialog {
+            egui::Window::new("Visualize Signal Data")
+                .collapsible(false)
+                .resizable(true)
+                .default_size([600.0, 400.0])
+                .show(ctx, |ui| {
+                    ui.heading("Signal Visualization");
+                    
+                    if let Some(ref row_data) = self.selected_row_data {
+                        ui.separator();
+                        
+                        // Show key signal parameters
+                        ui.label("Selected Signal Parameters:");
+                        
+                        egui::ScrollArea::vertical()
+                            .max_height(200.0)
+                            .show(ui, |ui| {
+                                egui::Grid::new("signal_params")
+                                    .num_columns(2)
+                                    .spacing([20.0, 4.0])
+                                    .show(ui, |ui| {
+                                        // Show important parameters first
+                                        let important_params = [
+                                            ("meta_filename", "Filename"),
+                                            ("sig_center_freq_hz", "Center Frequency (Hz)"),
+                                            ("sample_rate_hz", "Sample Rate (Hz)"),
+                                            ("sig_bandwidth_hz", "Bandwidth (Hz)"),
+                                            ("snr_db", "SNR (dB)"),
+                                            ("power_dbm", "Power (dBm)"),
+                                            ("duration_s", "Duration (s)"),
+                                            ("ml_wifi_prob", "WiFi Probability"),
+                                            ("ml_cell_prob", "Cellular Probability"),
+                                            ("ml_radar_prob", "Radar Probability"),
+                                        ];
+                                        
+                                        for (key, display_name) in &important_params {
+                                            if let Some(value) = row_data.get(*key) {
+                                                ui.label(format!("{}:", display_name));
+                                                ui.label(value);
+                                                ui.end_row();
+                                            }
+                                        }
+                                    });
+                            });
+                        
+                        ui.separator();
+                        
+                        // Placeholder for actual visualization buttons
+                        ui.horizontal(|ui| {
+                            
+                            if ui.button("PSD").clicked() {
+                                // TODO: Implement frequency domain visualization
+                                println!("Frequency domain plot requested for: {:?}", row_data.get("meta_filename"));
+                            }
+                            
+                            if ui.button("Spectrogram").clicked() {
+                                // TODO: Implement spectrogram visualization
+                                println!("Spectrogram requested for: {:?}", row_data.get("meta_filename"));
+                            }
+                        });
+                        
+                        ui.separator();
+                        ui.label("Note: Visualization functionality will load and process the actual signal data file.");
+                        
+                    } else {
+                        ui.colored_label(egui::Color32::RED, "No row data available");
+                    }
+                    
+                    ui.separator();
+                    if ui.button("Close").clicked() {
+                        self.show_visualization_dialog = false;
+                    }
+                });
         }
     }
 }
