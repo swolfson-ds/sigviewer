@@ -299,7 +299,9 @@ impl SigViewerApp {
                 if ui.button("Visualize").clicked() {
                     self.show_visualization_dialog = true;
                 }
-                
+                if ui.button("Open in Inspectrum").clicked() {
+                    self.open_in_inspectrum();
+                }
                 if ui.button("Clear Selection").clicked() {
                     self.clear_selection();
                 }
@@ -792,6 +794,35 @@ impl SigViewerApp {
                         self.show_visualization_dialog = false;
                     }
                 });
+        }
+    }
+}
+
+// handle visualizations
+impl SigViewerApp {
+    fn open_in_inspectrum(&self) {
+        if let Some(ref row_data) = self.selected_row_data {
+            if let Some(meta_filename) = row_data.get("meta_filename") {
+                // Get the full path to the meta file
+                let meta_path = std::path::Path::new(&self.directory_path).join(meta_filename);
+                
+                // Launch inspectrum with the meta file path
+                match std::process::Command::new("inspectrum")
+                    .arg(meta_path.to_string_lossy().to_string())
+                    .spawn()
+                {
+                    Ok(_) => {
+                        println!("Launched inspectrum with: {}", meta_path.display());
+                    }
+                    Err(e) => {
+                        println!("Failed to launch inspectrum");
+                    }
+                }
+            } else {
+                println!("No meta filename found in selected row data");
+            }
+        } else {
+            println!("No row selected or row data not available");
         }
     }
 }
