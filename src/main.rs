@@ -49,7 +49,11 @@ fn main() -> Result<()> {
             for name in collected.get_column_names() {
                 if let Ok(series) = collected.column(name) {
                     if series.len() > 0 {
-                        println!("{}: {:?}", name, series.get(0));
+                        print!("{}: ", name);
+                        for idx in 0..series.len() {
+                        print!("{:?},", series.get(idx));
+                        }
+                        println!();
                     }
                 }
             }

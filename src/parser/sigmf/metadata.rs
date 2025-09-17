@@ -53,7 +53,7 @@ pub struct CaptureInfo {
     #[serde(rename = "ds:gain")]
     pub gain: Option<f64>,
     #[serde(rename = "ds:sequence_num")]
-    pub sequence_num: Option<u64>,
+    pub sequence_num: Option<u64>,  
 
     #[serde(flatten)]
     pub extra_fields: HashMap<String, serde_json::Value>,

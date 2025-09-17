@@ -28,7 +28,29 @@ impl SigMFParser{
             data_file_path,
         })
     }
-    pub fn to_summary_row(&self) -> Result<DataFrame> {
+    
+    fn is_ml_annotation(&self, ann: &super::AnnotationInfo) -> bool {
+        ann.sig_center_freq.is_some() || 
+        ann.ask_prob.is_some() || 
+        ann.psk_prob.is_some() ||
+        ann.custom_classifier_probs.is_some()
+    }
+
+    // helper to get custom classifier probability for a specific annotation and class name 
+    // TODO snw -- make this just iterate over all custom classifier and add columns dynamically
+    fn get_custom_classifier_prob_for_annotation(
+        &self, 
+        ml_annotation: Option<&super::AnnotationInfo>, 
+        class_name: &str
+    ) -> Option<f64> {
+        ml_annotation?
+            .custom_classifier_probs.as_ref()?
+            .iter()
+            .find(|c| c.class_name == class_name)
+            .map(|c| c.class_prob as f64)
+    }
+
+    pub fn to_summary_rows(&self) -> Result<DataFrame> {
         let global = &self.metadata.global;
         
         // Get data filename (not full path)
@@ -54,23 +76,76 @@ impl SigMFParser{
         } else {
             (0, 0)
         };
-        
-        // Get ML annotation if available
-        let ml_annotation = self.metadata.annotations.as_ref()
-            .and_then(|anns| anns.iter().find(|ann| ann.sig_center_freq.is_some()));
-        
-        // Get capture info
+
+        // Get capture info (this remains the same for all rows)
         let capture_with_freq = self.metadata.captures.iter()
             .find(|c| c.frequency.is_some());
         let capture_with_datetime = self.metadata.captures.iter()
             .find(|c| c.timestamp.is_some());
         let capture_with_ds_info = self.metadata.captures.iter()
             .find(|c| c.gain.is_some() || c.agc.is_some());
-        
+
+        // Get ML annotations (annotations with ML data)
+        let ml_annotations: Vec<_> = self.metadata.annotations.as_ref()
+            .map(|anns| anns.iter().filter(|ann| self.is_ml_annotation(ann)).collect())
+            .unwrap_or_default();
+
+        // If no ML annotations, create a single row with default ML values
+        if ml_annotations.is_empty() {
+            return self.create_single_row_dataframe(
+                &meta_filename,
+                &data_filename,
+                num_samples,
+                file_size_bytes,
+                global,
+                capture_with_freq,
+                capture_with_datetime,
+                capture_with_ds_info,
+                None,
+            );
+        }
+
+        // Create a row for each ML annotation
+        let mut all_rows = Vec::new();
+        for ml_annotation in ml_annotations {
+            let row_df = self.create_single_row_dataframe(
+                &meta_filename,
+                &data_filename,
+                num_samples,
+                file_size_bytes,
+                global,
+                capture_with_freq,
+                capture_with_datetime,
+                capture_with_ds_info,
+                Some(ml_annotation),
+            )?;
+            all_rows.push(row_df);
+        }
+
+        // Concatenate all rows
+        let mut result = all_rows[0].clone();
+        for df in all_rows.into_iter().skip(1) {
+            result = result.vstack(&df)?;
+        }
+        Ok(result)
+    }
+
+    fn create_single_row_dataframe(
+        &self,
+        meta_filename: &str,
+        data_filename: &str,
+        num_samples: u64,
+        file_size_bytes: u64,
+        global: &super::GlobalInfo,
+        capture_with_freq: Option<&super::CaptureInfo>,
+        capture_with_datetime: Option<&super::CaptureInfo>,
+        capture_with_ds_info: Option<&super::CaptureInfo>,
+        ml_annotation: Option<&super::AnnotationInfo>,
+    ) -> Result<DataFrame> {
         let df = df! {
             // File identification
-            "meta_filename" => vec![meta_filename],
-            "data_filename" => vec![data_filename],
+            "meta_filename" => vec![meta_filename.to_string()],
+            "data_filename" => vec![data_filename.to_string()],
             
             // Basic file info
             "num_samples" => vec![num_samples],
@@ -149,9 +224,9 @@ impl SigMFParser{
             "ml_css_prob" => vec![ml_annotation.and_then(|a| a.css_prob).unwrap_or(0.0)],
             
             // Custom classifier results
-            "ml_wifi_prob" => vec![self.get_custom_classifier_prob("wifi").unwrap_or(0.0)],
-            "ml_cell_prob" => vec![self.get_custom_classifier_prob("cell").unwrap_or(0.0)],
-            "ml_radar_prob" => vec![self.get_custom_classifier_prob("radar").unwrap_or(0.0)],
+            "ml_wifi_prob" => vec![self.get_custom_classifier_prob_for_annotation(ml_annotation, "wifi").unwrap_or(0.0)],
+            "ml_cell_prob" => vec![self.get_custom_classifier_prob_for_annotation(ml_annotation, "cell").unwrap_or(0.0)],
+            "ml_radar_prob" => vec![self.get_custom_classifier_prob_for_annotation(ml_annotation, "radar").unwrap_or(0.0)],
             
             // Boolean flags
             "ml_no_sig" => vec![ml_annotation.and_then(|a| a.ml_no_sig).unwrap_or(false)],
@@ -176,6 +251,10 @@ impl SigMFParser{
         }?;
         
         Ok(df)
+    }
+
+    pub fn to_summary_row(&self) -> Result<DataFrame> {
+        self.to_summary_rows()
     }
 
     fn get_custom_classifier_prob(&self, class_name: &str) -> Option<f64> {
